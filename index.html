@@ -261,5 +261,594 @@
         <i id="toastIcon" class="fa-solid fa-check text-emerald-400 dark:text-emerald-600"></i>
         <span id="toastMessage">Copied to clipboard!</span>
     </div>
-    <script>
+  
+        <script>
+
+/* ==========================================================
+   APPLICATION STATE
+========================================================== */
+
+let currentDecodedData = "";
+let lastScanResult = null;
+
+let originalImgDimensions = {
+    width: 0,
+    height: 0
+};
+
+/* ==========================================================
+   DOM REFERENCES
+========================================================== */
+
+const dropZone = document.getElementById('dropZone');
+const fileInput = document.getElementById('fileInput');
+
+const qrCanvas = document.getElementById('qrCanvas');
+const ctx = qrCanvas.getContext('2d');
+
+const emptyState = document.getElementById('emptyState');
+const resultContainer = document.getElementById('resultContainer');
+const statusBadge = document.getElementById('statusBadge');
+const visualLegend = document.getElementById('visualLegend');
+
+const themeToggle = document.getElementById('themeToggle');
+
+/* ==========================================================
+   EMVCO CONFIGURATION
+========================================================== */
+
+const currencyCodes = {
+
+    '480': 'Mauritian Rupee (MUR)',
+    '840': 'US Dollar (USD)',
+    '978': 'Euro (EUR)',
+    '826': 'British Pound (GBP)',
+    '356': 'Indian Rupee (INR)'
+
+};
+
+const emvcoTagNames = {
+
+    '00': 'Payload Format Indicator',
+    '01': 'Point of Initiation Method',
+
+    '26': 'Merchant Account Information',
+
+    '52': 'Merchant Category Code',
+    '53': 'Transaction Currency',
+    '54': 'Transaction Amount',
+
+    '55': 'Tip Indicator',
+    '56': 'Convenience Fee Fixed',
+    '57': 'Convenience Fee Percentage',
+
+    '58': 'Country Code',
+    '59': 'Merchant Name',
+    '60': 'Merchant City',
+    '61': 'Postal Code',
+
+    '62': 'Additional Data Field Template',
+    '63': 'CRC Checksum'
+};
+
+const merchantAccountSubTags = {
+
+    '00': 'Globally Unique Identifier',
+    '01': 'Payment Network Specific',
+    '02': 'Payment Network Specific',
+    '03': 'Payment Network Specific',
+    '04': 'Payment Network Specific',
+    '05': 'Payment Network Specific'
+
+};
+
+const additionalDataSubTags = {
+
+    '01': 'Bill Number',
+    '02': 'Mobile Number',
+    '03': 'Store Label',
+    '04': 'Loyalty Number',
+    '05': 'Reference Label',
+    '06': 'Customer Label',
+    '07': 'Terminal Label',
+    '08': 'Purpose of Transaction',
+    '09': 'Consumer Data Request'
+
+};
+
+/* ==========================================================
+   INIT
+========================================================== */
+
+initializeTheme();
+initializeDragDrop();
+initializeFilePicker();
+initializePasteHandler();
+
+/* ==========================================================
+   THEME
+========================================================== */
+
+function initializeTheme() {
+
+    if (
+        localStorage.getItem('theme')
+        === 'dark'
+    ) {
+
+        document.documentElement
+            .classList
+            .add('dark');
+    }
+
+    themeToggle.addEventListener(
+        'click',
+        toggleTheme
+    );
+}
+
+function toggleTheme() {
+
+    document.documentElement
+        .classList
+        .toggle('dark');
+
+    localStorage.setItem(
+        'theme',
+
+        document.documentElement
+            .classList
+            .contains('dark')
+                ? 'dark'
+                : 'light'
+    );
+}
+
+/* ==========================================================
+   DRAG & DROP
+========================================================== */
+
+function initializeDragDrop() {
+
+    ['dragenter', 'dragover']
+        .forEach(eventName => {
+
+            dropZone.addEventListener(
+                eventName,
+                handleDragOver
+            );
+
+        });
+
+    ['dragleave', 'drop']
+        .forEach(eventName => {
+
+            dropZone.addEventListener(
+                eventName,
+                handleDragLeave
+            );
+
+        });
+
+    dropZone.addEventListener(
+        'drop',
+        handleFileDrop
+    );
+}
+
+function handleDragOver(e) {
+
+    e.preventDefault();
+
+    dropZone.classList.add(
+        'border-blue-500',
+        'bg-blue-50/50',
+        'dark:bg-slate-800/50'
+    );
+}
+
+function handleDragLeave(e) {
+
+    e.preventDefault();
+
+    dropZone.classList.remove(
+        'border-blue-500',
+        'bg-blue-50/50',
+        'dark:bg-slate-800/50'
+    );
+}
+
+function handleFileDrop(e) {
+
+    const file =
+        e.dataTransfer.files[0];
+
+    if (file) {
+        processImageFile(file);
+    }
+}
+
+/* ==========================================================
+   FILE PICKER
+========================================================== */
+
+function initializeFilePicker() {
+
+    dropZone.addEventListener(
+        'click',
+        () => fileInput.click()
+    );
+
+    fileInput.addEventListener(
+        'change',
+        e => {
+
+            if (e.target.files[0]) {
+
+                processImageFile(
+                    e.target.files[0]
+                );
+            }
+
+        }
+    );
+}
+
+/* ==========================================================
+   PASTE SUPPORT
+========================================================== */
+
+function initializePasteHandler() {
+
+    window.addEventListener(
+        'paste',
+        handlePaste
+    );
+}
+
+function handlePaste(event) {
+
+    const items =
+        event.clipboardData.items;
+
+    for (const item of items) {
+
+        if (
+            item.kind === 'file' &&
+            item.type.startsWith('image/')
+        ) {
+
+            processImageFile(
+                item.getAsFile()
+            );
+
+            showToast(
+                'Image pasted',
+                'fa-paste'
+            );
+
+            return;
+        }
+    }
+
+    const text =
+        event.clipboardData
+        .getData('text/plain')
+        .trim();
+
+    if (text) {
+
+        displayDecodedPayload(text);
+
+        showToast(
+            'Payload pasted',
+            'fa-paste'
+        );
+    }
+}
+
+/* ==========================================================
+   IMAGE PROCESSING
+========================================================== */
+
+function processImageFile(file) {
+
+    const reader =
+        new FileReader();
+
+    reader.onload = event => {
+
+        const img =
+            new Image();
+
+        img.onload = () => {
+
+            analyzeAndDrawQR(img);
+        };
+
+        img.src =
+            event.target.result;
+    };
+
+    reader.readAsDataURL(file);
+}
+
+/* ==========================================================
+   QR ANALYSIS
+========================================================== */
+
+function analyzeAndDrawQR(img) {
+
+    originalImgDimensions = {
+
+        width: img.width,
+        height: img.height
+
+    };
+
+    qrCanvas.width = img.width;
+    qrCanvas.height = img.height;
+
+    ctx.clearRect(
+        0,
+        0,
+        qrCanvas.width,
+        qrCanvas.height
+    );
+
+    ctx.drawImage(
+        img,
+        0,
+        0
+    );
+
+    const imageData =
+        ctx.getImageData(
+            0,
+            0,
+            qrCanvas.width,
+            qrCanvas.height
+        );
+
+    const code = jsQR(
+
+        imageData.data,
+        imageData.width,
+        imageData.height,
+
+        {
+            inversionAttempts:
+                'dontInvert'
+        }
+    );
+
+    if (!code) {
+
+        showToast(
+            'No QR detected',
+            'fa-triangle-exclamation'
+        );
+
+        return;
+    }
+
+    lastScanResult = code;
+
+    drawQROverlays(
+        code.location
+    );
+
+    populateTechSpecs(
+        code
+    );
+
+    displayDecodedPayload(
+        code.data
+    );
+}
+
+/* ==========================================================
+   EMVCO HELPERS
+========================================================== */
+
+function parseTLV(data) {
+
+    const fields = [];
+
+    let position = 0;
+
+    while (
+        position < data.length
+    ) {
+
+        const tag =
+            data.substring(
+                position,
+                position + 2
+            );
+
+        const length =
+            parseInt(
+                data.substring(
+                    position + 2,
+                    position + 4
+                ),
+                10
+            );
+
+        const value =
+            data.substring(
+                position + 4,
+                position + 4 + length
+            );
+
+        fields.push({
+            tag,
+            length,
+            value
+        });
+
+        position +=
+            4 + length;
+    }
+
+    return fields;
+}
+
+function parseEmvcoPayload(payload) {
+
+    if (
+        !payload.startsWith(
+            '000201'
+        )
+    ) {
+        return null;
+    }
+
+    const fields =
+        parseTLV(payload);
+
+    fields.forEach(field => {
+
+        if (
+            Number(field.tag) >= 26 &&
+            Number(field.tag) <= 51
+        ) {
+
+            field.children =
+                parseTLV(
+                    field.value
+                );
+
+            field.isMauCAS =
+                field.value
+                    .toLowerCase()
+                    .includes(
+                        'mu.maucas'
+                    );
+        }
+
+        if (
+            field.tag === '62'
+        ) {
+
+            field.children =
+                parseTLV(
+                    field.value
+                );
+        }
+    });
+
+    return fields;
+}
+
+/* ==========================================================
+   CRC VALIDATION
+========================================================== */
+
+function calculateCRC16(payload) {
+
+    let crc = 0xFFFF;
+
+    for (
+        let i = 0;
+        i < payload.length;
+        i++
+    ) {
+
+        crc ^=
+            payload.charCodeAt(i)
+            << 8;
+
+        for (
+            let bit = 0;
+            bit < 8;
+            bit++
+        ) {
+
+            crc =
+                (crc & 0x8000)
+                ? (crc << 1) ^ 0x1021
+                : crc << 1;
+
+            crc &= 0xFFFF;
+        }
+    }
+
+    return crc
+        .toString(16)
+        .toUpperCase()
+        .padStart(4, '0');
+}
+
+/* ==========================================================
+   SECURITY ANALYSIS
+========================================================== */
+
+function runSecurityChecks(text) {
+
+    /* your security logic here */
+}
+
+/* ==========================================================
+   EXPORT
+========================================================== */
+
+function exportJSONReport() {
+
+    /* your export logic here */
+}
+
+/* ==========================================================
+   UI HELPERS
+========================================================== */
+
+async function copyToClipboard(text) {
+
+    try {
+
+        await navigator
+            .clipboard
+            .writeText(text);
+
+        showToast(
+            'Copied!',
+            'fa-check'
+        );
+
+    } catch {
+
+        showToast(
+            'Copy failed',
+            'fa-xmark'
+        );
+    }
+}
+
+function showToast(
+    message,
+    icon
+) {
+
+    /* toast code */
+}
+
+function escapeHtml(str) {
+
+    return String(str || '')
+        .replace(/&/g, '&amp;')
+        .replace(/</g, '&lt;')
+        .replace(/>/g, '&gt;')
+        .replace(/"/g, '&quot;')
+        .replace(/'/g, '&#39;');
+}
+
+function escapeJs(str) {
+
+    return String(str || '')
+        .replace(/\\/g, '\\\\')
+        .replace(/'/g, "\\'");
+}
+
+</script>
       
