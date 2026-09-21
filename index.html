@@ -261,89 +261,493 @@
         <i id="toastIcon" class="fa-solid fa-check text-emerald-400 dark:text-emerald-600"></i>
         <span id="toastMessage">Copied to clipboard!</span>
     </div>
-  
-        <script>
 
-/* ==========================================================
-   APPLICATION STATE
-========================================================== */
+    <script>
+        // Global App State
+        let currentDecodedData = "";
+        let lastScanResult = null;
+        let originalImgDimensions = {
+            width: 0,
+            height: 0
+        };
 
-let currentDecodedData = "";
-let lastScanResult = null;
+        // DOM Element Cache
+        const dropZone = document.getElementById('dropZone');
+        const fileInput = document.getElementById('fileInput');
+        const qrCanvas = document.getElementById('qrCanvas');
+        const emptyState = document.getElementById('emptyState');
+        const ctx = qrCanvas.getContext('2d');
+        const resultContainer = document.getElementById('resultContainer');
+        const statusBadge = document.getElementById('statusBadge');
+        const visualLegend = document.getElementById('visualLegend');
 
-let originalImgDimensions = {
-    width: 0,
-    height: 0
-};
+        // Dark Mode Setup
+        const themeToggle = document.getElementById('themeToggle');
+        themeToggle.addEventListener('click', () => {
+            document.documentElement.classList.toggle('dark');
+        });
 
-/* ==========================================================
-   DOM REFERENCES
-========================================================== */
+        // Setup Drag & Drop Handlers
+        ['dragenter', 'dragover'].forEach(eventName => {
+            dropZone.addEventListener(eventName, (e) => {
+                e.preventDefault();
+                dropZone.classList.add('border-blue-500', 'bg-blue-50/50', 'dark:bg-slate-800/50');
+            });
+        });
 
-const dropZone = document.getElementById('dropZone');
-const fileInput = document.getElementById('fileInput');
+        ['dragleave', 'drop'].forEach(eventName => {
+            dropZone.addEventListener(eventName, (e) => {
+                e.preventDefault();
+                dropZone.classList.remove('border-blue-500', 'bg-blue-50/50', 'dark:bg-slate-800/50');
+            });
+        });
 
-const qrCanvas = document.getElementById('qrCanvas');
-const ctx = qrCanvas.getContext('2d');
+        dropZone.addEventListener('drop', (e) => {
+            const file = e.dataTransfer.files[0];
+            if (file) processImageFile(file);
+        });
 
-const emptyState = document.getElementById('emptyState');
-const resultContainer = document.getElementById('resultContainer');
-const statusBadge = document.getElementById('statusBadge');
-const visualLegend = document.getElementById('visualLegend');
+        dropZone.addEventListener('click', () => fileInput.click());
+        fileInput.addEventListener('change', (e) => {
+            if (e.target.files[0]) processImageFile(e.target.files[0]);
+        });
 
-const themeToggle = document.getElementById('themeToggle');
+        // Clipboard Paste Listener
+        window.addEventListener('paste', (e) => {
+            const items = (e.clipboardData || e.originalEvent.clipboardData).items;
+            for (let item of items) {
+                if (item.kind === 'file' && item.type.startsWith('image/')) {
+                    const blob = item.getAsFile();
+                    processImageFile(blob);
+                    showToast("Pasted image from clipboard!", "fa-paste");
+                    break;
+                }
+            }
 
-/* ==========================================================
-   EMVCO CONFIGURATION
-========================================================== */
+            const pastedText = (e.clipboardData || e.originalEvent.clipboardData).getData('text/plain').trim();
+            if (pastedText) {
+                displayDecodedPayload(pastedText);
+                showToast("Pasted QR payload!", "fa-paste");
+            }
+        });
 
-const currencyCodes = {
+        // Toast Helper
+        function showToast(message, iconClass = "fa-check") {
+            const toast = document.getElementById('toast');
+            const toastMsg = document.getElementById('toastMessage');
+            const toastIcon = document.getElementById('toastIcon');
 
-    '480': 'Mauritian Rupee (MUR)',
-    '840': 'US Dollar (USD)',
-    '978': 'Euro (EUR)',
-    '826': 'British Pound (GBP)',
-    '356': 'Indian Rupee (INR)'
+            toastMsg.innerText = message;
+            toastIcon.className = `fa-solid ${iconClass} text-emerald-400 dark:text-emerald-600`;
 
-};
+            toast.classList.remove('translate-y-20', 'opacity-0');
+            setTimeout(() => {
+                toast.classList.add('translate-y-20', 'opacity-0');
+            }, 2600);
+        }
 
-const emvcoTagNames = {
+        // Copy Helper
+        function copyToClipboard(text) {
+            if (!text) return;
+            const tempInput = document.createElement('textarea');
+            tempInput.value = text;
+            document.body.appendChild(tempInput);
+            tempInput.select();
+            document.execCommand('copy');
+            document.body.removeChild(tempInput);
+            showToast("Copied to clipboard!");
+        }
 
-    '00': 'Payload Format Indicator',
-    '01': 'Point of Initiation Method',
+        // Processing Image File
+        function processImageFile(file) {
+            const reader = new FileReader();
+            reader.onload = (e) => {
+                const img = new Image();
+                img.onload = () => {
+                    analyzeAndDrawQR(img);
+                };
+                img.src = e.target.result;
+            };
+            reader.readAsDataURL(file);
+        }
 
-    '26': 'Merchant Account Information',
+        function analyzeAndDrawQR(img) {
+            originalImgDimensions = {
+                width: img.width,
+                height: img.height
+            };
 
-    '52': 'Merchant Category Code',
-    '53': 'Transaction Currency',
-    '54': 'Transaction Amount',
+            // Setup Canvas size
+            qrCanvas.width = img.width;
+            qrCanvas.height = img.height;
+            ctx.drawImage(img, 0, 0);
 
-    '55': 'Tip Indicator',
-    '56': 'Convenience Fee Fixed',
-    '57': 'Convenience Fee Percentage',
+            // Fetch image pixels
+            const imageData = ctx.getImageData(0, 0, qrCanvas.width, qrCanvas.height);
+            const code = jsQR(imageData.data, imageData.width, imageData.height, {
+                inversionAttempts: "dontInvert"
+            });
 
-    '58': 'Country Code',
-    '59': 'Merchant Name',
-    '60': 'Merchant City',
-    '61': 'Postal Code',
+            emptyState.classList.add('hidden');
+            qrCanvas.classList.remove('hidden');
 
-    '62': 'Additional Data Field Template',
-    '63': 'CRC Checksum'
-};
+            if (code) {
+                lastScanResult = code;
+                currentDecodedData = code.data;
+                statusBadge.classList.remove('hidden');
+                visualLegend.classList.remove('hidden');
+                visualLegend.classList.add('flex');
 
-const merchantAccountSubTags = {
+                // Draw Visual Overlay Highlights
+                drawQROverlays(code.location);
 
+                // Populate Technical Specifications & Structured Parsed Fields
+                populateTechSpecs(code);
+                displayDecodedPayload(code.data);
+
+                resultContainer.classList.remove('hidden');
+                resultContainer.classList.add('flex');
+            } else {
+                statusBadge.classList.add('hidden');
+                visualLegend.classList.add('hidden');
+                resultContainer.classList.add('hidden');
+                alert("No readable QR Code detected in this image. Try another photo or ensure clear focus.");
+            }
+        }
+
+        function displayDecodedPayload(payload) {
+            currentDecodedData = payload;
+            statusBadge.classList.remove('hidden');
+            parseAndDisplayPayload(payload);
+            runSecurityChecks(payload);
+            resultContainer.classList.remove('hidden');
+            resultContainer.classList.add('flex');
+        }
+
+        // Draw overlay bounding box and finder pattern highlights on canvas
+        function drawQROverlays(loc) {
+            const corners = [loc.topLeftCorner, loc.topRightCorner, loc.bottomRightCorner, loc.bottomLeftCorner];
+
+            // 1. Draw outer boundary box (Emerald)
+            ctx.beginPath();
+            ctx.moveTo(loc.topLeftCorner.x, loc.topLeftCorner.y);
+            ctx.lineTo(loc.topRightCorner.x, loc.topRightCorner.y);
+            ctx.lineTo(loc.bottomRightCorner.x, loc.bottomRightCorner.y);
+            ctx.lineTo(loc.bottomLeftCorner.x, loc.bottomLeftCorner.y);
+            ctx.closePath();
+            ctx.lineWidth = Math.max(4, Math.floor(qrCanvas.width / 150));
+            ctx.strokeStyle = '#10b981'; // Emerald 500
+            ctx.stroke();
+
+            // Fill transparent overlay inside boundary
+            ctx.fillStyle = 'rgba(16, 185, 129, 0.12)';
+            ctx.fill();
+
+            // 2. Draw Finder Pattern highlights at corners (Red circles / squares)
+            const finderPoints = [loc.topLeftCorner, loc.topRightCorner, loc.bottomLeftCorner];
+            finderPoints.forEach((point) => {
+                const radius = Math.max(8, Math.floor(qrCanvas.width / 40));
+
+                // Outer ring
+                ctx.beginPath();
+                ctx.arc(point.x, point.y, radius, 0, 2 * Math.PI);
+                ctx.strokeStyle = '#ef4444'; // Red
+                ctx.lineWidth = Math.max(3, Math.floor(qrCanvas.width / 200));
+                ctx.stroke();
+
+                // Inner dot
+                ctx.beginPath();
+                ctx.arc(point.x, point.y, radius * 0.4, 0, 2 * Math.PI);
+                ctx.fillStyle = '#ef4444';
+                ctx.fill();
+            });
+
+            // 3. Draw Corner vertices markers (Amber)
+            corners.forEach((pt) => {
+                const dotSize = Math.max(4, Math.floor(qrCanvas.width / 120));
+                ctx.beginPath();
+                ctx.arc(pt.x, pt.y, dotSize, 0, 2 * Math.PI);
+                ctx.fillStyle = '#f59e0b'; // Amber 500
+                ctx.fill();
+            });
+        }
+
+        // Calculate specs (Estimated version, resolution, vertices)
+        function populateTechSpecs(code) {
+            const loc = code.location;
+
+            // Approximate module count by measuring distance between Top-Left and Top-Right
+            const widthPx = Math.hypot(loc.topRightCorner.x - loc.topLeftCorner.x, loc.topRightCorner.y - loc.topLeftCorner.y);
+
+            // Rough heuristic for QR Code Version: Modules = 21 + 4*(Version-1)
+            // Estimation derived from vertex boundary
+            let estimatedModules = Math.round(widthPx / 8);
+            if (estimatedModules < 21) estimatedModules = 21;
+            const estimatedVersion = Math.max(1, Math.min(40, Math.round((estimatedModules - 21) / 4) + 1));
+
+            document.getElementById('specResolution').innerText = `${originalImgDimensions.width} × ${originalImgDimensions.height} px`;
+            document.getElementById('specVersion').innerText = `Version ${estimatedVersion} (~${21 + 4*(estimatedVersion-1)}×${21 + 4*(estimatedVersion-1)})`;
+            document.getElementById('specLength').innerText = `${code.data.length} characters`;
+            document.getElementById('specModules').innerText = `~${21 + 4*(estimatedVersion-1)} Grid`;
+
+            document.getElementById('coordTL').innerText = `${Math.round(loc.topLeftCorner.x)}, ${Math.round(loc.topLeftCorner.y)}`;
+            document.getElementById('coordTR').innerText = `${Math.round(loc.topRightCorner.x)}, ${Math.round(loc.topRightCorner.y)}`;
+            document.getElementById('coordBR').innerText = `${Math.round(loc.bottomRightCorner.x)}, ${Math.round(loc.bottomRightCorner.y)}`;
+            document.getElementById('coordBL').innerText = `${Math.round(loc.bottomLeftCorner.x)}, ${Math.round(loc.bottomLeftCorner.y)}`;
+        }
+
+        function parseAndDisplayPayload(rawText) {
+            const container = document.getElementById('parsedFieldContainer');
+            const badge = document.getElementById('payloadTypeBadge');
+            document.getElementById('rawPayloadText').innerText = rawText;
+            container.innerHTML = '';
+
+            // 1. Check EMVCo merchant-presented QR payload.
+            const emvcoFields = parseEmvcoPayload(rawText);
+            if (emvcoFields) {
+                badge.innerText = 'EMVCO QR';
+                badge.className = 'px-2.5 py-0.5 text-xs font-semibold rounded-full bg-indigo-100 text-indigo-800 dark:bg-indigo-950 dark:text-indigo-300 border border-indigo-300';
+                container.innerHTML = `
+                    <div class="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                        ${emvcoFields.map(field => `
+                            <div class="p-3 bg-slate-100 dark:bg-slate-900 rounded-xl ${field.tag === '62' || field.tag === '63' ? 'sm:col-span-2' : ''}">
+                                <span class="text-xs text-slate-500 block">Tag ${field.tag} &middot; ${escapeHtml(field.name)}</span>
+                                <span class="font-semibold text-sm font-mono break-all">${escapeHtml(field.value)}</span>
+                            </div>
+                        `).join('')}
+                    </div>
+                `;
+                return;
+            }
+
+            // 2. Check Wi-Fi Config format: WIFI:S:SSID;T:WPA;P:PASSWORD;;
+            if (rawText.startsWith('WIFI:')) {
+                badge.innerText = 'WI-FI NETWORK';
+                badge.className = 'px-2.5 py-0.5 text-xs font-semibold rounded-full bg-emerald-100 text-emerald-800 dark:bg-emerald-950 dark:text-emerald-300 border border-emerald-300';
+
+                const ssid = (rawText.match(/S:([^;]*)/) || [])[1] || '';
+                const pass = (rawText.match(/P:([^;]*)/) || [])[1] || '';
+                const type = (rawText.match(/T:([^;]*)/) || [])[1] || 'Open';
+
+                container.innerHTML = `
+                    <div class="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                        <div class="p-3 bg-slate-100 dark:bg-slate-900 rounded-xl">
+                            <span class="text-xs text-slate-500 block">Network Name (SSID)</span>
+                            <span class="font-semibold text-sm select-all">${escapeHtml(ssid)}</span>
+                        </div>
+                        <div class="p-3 bg-slate-100 dark:bg-slate-900 rounded-xl">
+                            <span class="text-xs text-slate-500 block">Encryption Type</span>
+                            <span class="font-semibold text-sm">${escapeHtml(type)}</span>
+                        </div>
+                        <div class="p-3 bg-slate-100 dark:bg-slate-900 rounded-xl sm:col-span-2 flex items-center justify-between">
+                            <div>
+                                <span class="text-xs text-slate-500 block">Password</span>
+                                <span class="font-semibold text-sm font-mono select-all">${escapeHtml(pass) || '<em>(None)</em>'}</span>
+                            </div>
+                            ${pass ? `<button onclick="copyToClipboard('${escapeJs(pass)}')" class="px-3 py-1.5 text-xs bg-blue-600 hover:bg-blue-700 text-white font-medium rounded-lg transition"><i class="fa-regular fa-copy mr-1"></i> Copy Password</button>` : ''}
+                        </div>
+                    </div>
+                `;
+                return;
+            }
+
+            // 3. Check vCard / MeCard format
+            if (rawText.startsWith('BEGIN:VCARD') || rawText.startsWith('MECARD:')) {
+                badge.innerText = 'vCARD CONTACT';
+                badge.className = 'px-2.5 py-0.5 text-xs font-semibold rounded-full bg-purple-100 text-purple-800 dark:bg-purple-950 dark:text-purple-300 border border-purple-300';
+
+                const name = (rawText.match(/FN:([^\n\r]*)/) || rawText.match(/N:([^\n\r]*)/) || [])[1] || 'Contact';
+                const phone = (rawText.match(/TEL[^\:]*:([^\n\r]*)/) || [])[1] || '';
+                const email = (rawText.match(/EMAIL[^\:]*:([^\n\r]*)/) || [])[1] || '';
+                const org = (rawText.match(/ORG:([^\n\r]*)/) || [])[1] || '';
+
+                container.innerHTML = `
+                    <div class="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                        <div class="p-3 bg-slate-100 dark:bg-slate-900 rounded-xl sm:col-span-2 flex items-center gap-3">
+                            <div class="w-10 h-10 rounded-full bg-purple-500 text-white flex items-center justify-center text-lg font-bold">
+                                ${escapeHtml(name.charAt(0).toUpperCase())}
+                            </div>
+                            <div>
+                                <span class="font-bold text-base block">${escapeHtml(name)}</span>
+                                <span class="text-xs text-slate-500">${escapeHtml(org)}</span>
+                            </div>
+                        </div>
+                        ${phone ? `
+                        <div class="p-3 bg-slate-100 dark:bg-slate-900 rounded-xl">
+                            <span class="text-xs text-slate-500 block">Phone</span>
+                            <a href="tel:${escapeHtml(phone)}" class="font-medium text-sm text-blue-600 dark:text-blue-400 hover:underline">${escapeHtml(phone)}</a>
+                        </div>` : ''}
+                        ${email ? `
+                        <div class="p-3 bg-slate-100 dark:bg-slate-900 rounded-xl">
+                            <span class="text-xs text-slate-500 block">Email</span>
+                            <a href="mailto:${escapeHtml(email)}" class="font-medium text-sm text-blue-600 dark:text-blue-400 hover:underline">${escapeHtml(email)}</a>
+                        </div>` : ''}
+                    </div>
+                `;
+                return;
+            }
+
+            // 4. Check URL / Web Link format
+            if (/^https?:\/\//i.test(rawText)) {
+                badge.innerText = 'WEB URL';
+                badge.className = 'px-2.5 py-0.5 text-xs font-semibold rounded-full bg-blue-100 text-blue-800 dark:bg-blue-950 dark:text-blue-300 border border-blue-300';
+
+                let urlObj = null;
+                try { urlObj = new URL(rawText); } catch(e){}
+
+                container.innerHTML = `
+                    <div class="p-4 bg-slate-100 dark:bg-slate-900 rounded-xl flex flex-col gap-3">
+                        <div>
+                            <span class="text-xs text-slate-500 block">Destination URL</span>
+                            <a href="${escapeHtml(rawText)}" target="_blank" rel="noopener noreferrer" class="text-sm font-semibold text-blue-600 dark:text-blue-400 hover:underline break-all">${escapeHtml(rawText)}</a>
+                        </div>
+                        ${urlObj ? `
+                        <div class="flex items-center gap-4 text-xs text-slate-500 border-t border-slate-200 dark:border-slate-800 pt-2">
+                            <span><strong>Host:</strong> ${escapeHtml(urlObj.hostname)}</span>
+                            <span><strong>Protocol:</strong> ${escapeHtml(urlObj.protocol)}</span>
+                        </div>` : ''}
+                        <div>
+                            <a href="${escapeHtml(rawText)}" target="_blank" rel="noopener noreferrer" class="inline-flex items-center gap-1.5 px-3 py-2 text-xs bg-blue-600 hover:bg-blue-700 text-white font-medium rounded-lg transition">
+                                <i class="fa-solid fa-arrow-up-right-from-square"></i> Open URL Safely
+                            </a>
+                        </div>
+                    </div>
+                `;
+                return;
+            }
+
+            // 5. Check Geolocation scheme: geo:latitude,longitude
+            if (rawText.startsWith('geo:')) {
+                badge.innerText = 'GEOLOCATION';
+                badge.className = 'px-2.5 py-0.5 text-xs font-semibold rounded-full bg-amber-100 text-amber-800 dark:bg-amber-950 dark:text-amber-300 border border-amber-300';
+
+                const coords = rawText.replace('geo:', '').split('?')[0];
+                const mapsUrl = `https://maps.google.com/?q=${coords}`;
+
+                container.innerHTML = `
+                    <div class="p-4 bg-slate-100 dark:bg-slate-900 rounded-xl flex items-center justify-between">
+                        <div>
+                            <span class="text-xs text-slate-500 block">Coordinates (Lat, Long)</span>
+                            <span class="text-sm font-mono font-semibold">${escapeHtml(coords)}</span>
+                        </div>
+                        <a href="${mapsUrl}" target="_blank" rel="noopener" class="px-3 py-2 text-xs bg-amber-600 hover:bg-amber-700 text-white font-medium rounded-lg transition flex items-center gap-1">
+                            <i class="fa-solid fa-map-location-dot"></i> View on Google Maps
+                        </a>
+                    </div>
+                `;
+                return;
+            }
+
+            // Default Plain Text / Fallback
+            badge.innerText = 'PLAIN TEXT / OTHER';
+            badge.className = 'px-2.5 py-0.5 text-xs font-semibold rounded-full bg-slate-200 text-slate-800 dark:bg-slate-800 dark:text-slate-300';
+
+            container.innerHTML = `
+                <div class="p-3 bg-slate-100 dark:bg-slate-900 rounded-xl">
+                    <span class="text-xs text-slate-500 block mb-1">Parsed Text Output</span>
+                    <p class="text-sm text-slate-800 dark:text-slate-200 break-words">${escapeHtml(rawText)}</p>
+                </div>
+            `;
+        }
+
+        // Security / Safety Heuristics Checks
+        function runSecurityChecks(rawText) {
+            const alertBox = document.getElementById('securityAlert');
+            const alertIcon = document.getElementById('securityIcon');
+            const alertTitle = document.getElementById('securityTitle');
+            const alertDesc = document.getElementById('securityDesc');
+
+            // Dangerous Schemes: javascript:, data:
+            if (/^(javascript:|data:|file:)/i.test(rawText)) {
+                alertBox.className = "rounded-xl p-4 border bg-red-50 dark:bg-red-950/40 border-red-300 dark:border-red-800 text-red-900 dark:text-red-200";
+                alertIcon.innerHTML = '<i class="fa-solid fa-triangle-exclamation text-red-600 dark:text-red-400"></i>';
+                alertTitle.innerText = "High Risk / Suspicious Script Payload Executable Detected";
+                alertDesc.innerText = "This QR code contains executable scheme URIs (e.g., javascript: or data:) which could trigger malicious scripts if executed blindly.";
+                return;
+            }
+
+            // Non-HTTPS or Shortened URLs
+            if (/^http:\/\//i.test(rawText)) {
+                alertBox.className = "rounded-xl p-4 border bg-amber-50 dark:bg-amber-950/40 border-amber-300 dark:border-amber-800 text-amber-900 dark:text-amber-200";
+                alertIcon.innerHTML = '<i class="fa-solid fa-shield-cat text-amber-600 dark:text-amber-400"></i>';
+                alertTitle.innerText = "Unencrypted Protocol Notice (HTTP)";
+                alertDesc.innerText = "This URL uses unencrypted HTTP rather than secure HTTPS. Proceed with caution when providing sensitive data.";
+                return;
+            }
+
+            // Known URL Shortener Domains
+            const shorteners = ['bit.ly', 'tinyurl.com', 't.co', 'goo.gl', 'is.gd', 'buff.ly', 'ow.ly'];
+            if (shorteners.some(domain => rawText.includes(domain))) {
+                alertBox.className = "rounded-xl p-4 border bg-amber-50 dark:bg-amber-950/40 border-amber-300 dark:border-amber-800 text-amber-900 dark:text-amber-200";
+                alertIcon.innerHTML = '<i class="fa-solid fa-eye-slash text-amber-600 dark:text-amber-400"></i>';
+                alertTitle.innerText = "Shortened URL Detected";
+                alertDesc.innerText = "This QR code links through a URL shortening service. Shortened links can mask the ultimate destination domain.";
+                return;
+            }
+
+            // Default Clean / Low Risk
+            alertBox.className = "rounded-xl p-4 border bg-emerald-50 dark:bg-emerald-950/30 border-emerald-200 dark:border-emerald-800 text-emerald-900 dark:text-emerald-200";
+            alertIcon.innerHTML = '<i class="fa-solid fa-shield-halved text-emerald-600 dark:text-emerald-400"></i>';
+            alertTitle.innerText = "Safety Check Passed";
+            alertDesc.innerText = "No immediate protocol risks or malicious scheme patterns were identified in this payload stream.";
+        }
+
+        // Export Detailed JSON Report
+        function exportJSONReport() {
+            if (!lastScanResult) return;
+            const report = {
+                timestamp: new Date().toISOString(),
+                payload: {
+                    raw: currentDecodedData,
+                    length: currentDecodedData.length
+                },
+                specifications: {
+                    resolution: `${originalImgDimensions.width}x${originalImgDimensions.height}`,
+                    corners: lastScanResult.location
+                }
+            };
+
+            const blob = new Blob([JSON.stringify(report, null, 2)], { type: 'application/json' });
+            const url = URL.createObjectURL(blob);
+            const a = document.createElement('a');
+            a.href = url;
+            a.download = `qr-report-${Date.now()}.json`;
+            a.click();
+            URL.revokeObjectURL(url);
+            showToast("Exported JSON report!", "fa-file-export");
+        }
+
+            const emvcoTagNames = {
+  // Root level tags
+  '00': 'Payload Format Indicator',
+  '01': 'Point of Initiation Method',
+  '52': 'Merchant Category Code',
+  '53': 'Transaction Currency Code',
+  '54': 'Transaction Amount',
+  '55': 'Tip or Convenience Indicator',
+  '56': 'Convenience Fee Fixed',
+  '57': 'Convenience Fee Percentage',
+  '58': 'Country Code',
+  '59': 'Merchant Name',
+  '60': 'Merchant City',
+  '61': 'Postal Code',
+  '62': 'Additional Data Field Template',
+  '63': 'CRC Checksum',
+
+  // Merchant Account Information templates (Reserved for networks)
+  // Tags 02-25 are Visa/Mastercard/etc. Tag 26 is often used for national/local networks.
+  '26': 'Merchant Account Information (Local Payment Network)',
+
+  // Sub-tags inside Merchant Account Information (e.g., Tag 26)
+  'sub_26': {
     '00': 'Globally Unique Identifier',
-    '01': 'Payment Network Specific',
-    '02': 'Payment Network Specific',
-    '03': 'Payment Network Specific',
-    '04': 'Payment Network Specific',
-    '05': 'Payment Network Specific'
+    '01': 'Payment Network Specific (ID 1)',
+    '02': 'Payment Network Specific (ID 2)',
+    '03': 'Payment Network Specific (ID 3)'
+  },
 
-};
-
-const additionalDataSubTags = {
-
+  // Sub-tags inside Additional Data Field Template (Tag 62)
+  'sub_62': {
     '01': 'Bill Number',
     '02': 'Mobile Number',
     '03': 'Store Label',
@@ -352,503 +756,46 @@ const additionalDataSubTags = {
     '06': 'Customer Label',
     '07': 'Terminal Label',
     '08': 'Purpose of Transaction',
-    '09': 'Consumer Data Request'
-
+    '09': 'Additional Consumer Request'
+  }
 };
 
-/* ==========================================================
-   INIT
-========================================================== */
+        function parseEmvcoPayload(payload) {
+            const normalizedPayload = String(payload || '').replace(/^\uFEFF/, '').trim();
+            if (!/^00\d{2}/.test(normalizedPayload)) return null;
 
-initializeTheme();
-initializeDragDrop();
-initializeFilePicker();
-initializePasteHandler();
+            const fields = [];
+            let position = 0;
+            while (position < normalizedPayload.length) {
+                if (position + 4 > normalizedPayload.length) return null;
+                const tag = normalizedPayload.slice(position, position + 2);
+                const length = Number(normalizedPayload.slice(position + 2, position + 4));
+                if (!Number.isInteger(length)) return null;
+                const valueStart = position + 4;
+                const valueEnd = valueStart + length;
+                if (valueEnd > normalizedPayload.length) return null;
 
-/* ==========================================================
-   THEME
-========================================================== */
-
-function initializeTheme() {
-
-    if (
-        localStorage.getItem('theme')
-        === 'dark'
-    ) {
-
-        document.documentElement
-            .classList
-            .add('dark');
-    }
-
-    themeToggle.addEventListener(
-        'click',
-        toggleTheme
-    );
-}
-
-function toggleTheme() {
-
-    document.documentElement
-        .classList
-        .toggle('dark');
-
-    localStorage.setItem(
-        'theme',
-
-        document.documentElement
-            .classList
-            .contains('dark')
-                ? 'dark'
-                : 'light'
-    );
-}
-
-/* ==========================================================
-   DRAG & DROP
-========================================================== */
-
-function initializeDragDrop() {
-
-    ['dragenter', 'dragover']
-        .forEach(eventName => {
-
-            dropZone.addEventListener(
-                eventName,
-                handleDragOver
-            );
-
-        });
-
-    ['dragleave', 'drop']
-        .forEach(eventName => {
-
-            dropZone.addEventListener(
-                eventName,
-                handleDragLeave
-            );
-
-        });
-
-    dropZone.addEventListener(
-        'drop',
-        handleFileDrop
-    );
-}
-
-function handleDragOver(e) {
-
-    e.preventDefault();
-
-    dropZone.classList.add(
-        'border-blue-500',
-        'bg-blue-50/50',
-        'dark:bg-slate-800/50'
-    );
-}
-
-function handleDragLeave(e) {
-
-    e.preventDefault();
-
-    dropZone.classList.remove(
-        'border-blue-500',
-        'bg-blue-50/50',
-        'dark:bg-slate-800/50'
-    );
-}
-
-function handleFileDrop(e) {
-
-    const file =
-        e.dataTransfer.files[0];
-
-    if (file) {
-        processImageFile(file);
-    }
-}
-
-/* ==========================================================
-   FILE PICKER
-========================================================== */
-
-function initializeFilePicker() {
-
-    dropZone.addEventListener(
-        'click',
-        () => fileInput.click()
-    );
-
-    fileInput.addEventListener(
-        'change',
-        e => {
-
-            if (e.target.files[0]) {
-
-                processImageFile(
-                    e.target.files[0]
-                );
+                fields.push({
+                    tag,
+                    value: normalizedPayload.slice(valueStart, valueEnd),
+                    name: emvcoTagNames[tag] || (Number(tag) >= 2 && Number(tag) <= 51 ? `Merchant Account Information ${tag}` : 'Custom / Sub-Tag')
+                });
+                position = valueEnd;
             }
 
-        }
-    );
-}
-
-/* ==========================================================
-   PASTE SUPPORT
-========================================================== */
-
-function initializePasteHandler() {
-
-    window.addEventListener(
-        'paste',
-        handlePaste
-    );
-}
-
-function handlePaste(event) {
-
-    const items =
-        event.clipboardData.items;
-
-    for (const item of items) {
-
-        if (
-            item.kind === 'file' &&
-            item.type.startsWith('image/')
-        ) {
-
-            processImageFile(
-                item.getAsFile()
-            );
-
-            showToast(
-                'Image pasted',
-                'fa-paste'
-            );
-
-            return;
-        }
-    }
-
-    const text =
-        event.clipboardData
-        .getData('text/plain')
-        .trim();
-
-    if (text) {
-
-        displayDecodedPayload(text);
-
-        showToast(
-            'Payload pasted',
-            'fa-paste'
-        );
-    }
-}
-
-/* ==========================================================
-   IMAGE PROCESSING
-========================================================== */
-
-function processImageFile(file) {
-
-    const reader =
-        new FileReader();
-
-    reader.onload = event => {
-
-        const img =
-            new Image();
-
-        img.onload = () => {
-
-            analyzeAndDrawQR(img);
-        };
-
-        img.src =
-            event.target.result;
-    };
-
-    reader.readAsDataURL(file);
-}
-
-/* ==========================================================
-   QR ANALYSIS
-========================================================== */
-
-function analyzeAndDrawQR(img) {
-
-    originalImgDimensions = {
-
-        width: img.width,
-        height: img.height
-
-    };
-
-    qrCanvas.width = img.width;
-    qrCanvas.height = img.height;
-
-    ctx.clearRect(
-        0,
-        0,
-        qrCanvas.width,
-        qrCanvas.height
-    );
-
-    ctx.drawImage(
-        img,
-        0,
-        0
-    );
-
-    const imageData =
-        ctx.getImageData(
-            0,
-            0,
-            qrCanvas.width,
-            qrCanvas.height
-        );
-
-    const code = jsQR(
-
-        imageData.data,
-        imageData.width,
-        imageData.height,
-
-        {
-            inversionAttempts:
-                'dontInvert'
-        }
-    );
-
-    if (!code) {
-
-        showToast(
-            'No QR detected',
-            'fa-triangle-exclamation'
-        );
-
-        return;
-    }
-
-    lastScanResult = code;
-
-    drawQROverlays(
-        code.location
-    );
-
-    populateTechSpecs(
-        code
-    );
-
-    displayDecodedPayload(
-        code.data
-    );
-}
-
-/* ==========================================================
-   EMVCO HELPERS
-========================================================== */
-
-function parseTLV(data) {
-
-    const fields = [];
-
-    let position = 0;
-
-    while (
-        position < data.length
-    ) {
-
-        const tag =
-            data.substring(
-                position,
-                position + 2
-            );
-
-        const length =
-            parseInt(
-                data.substring(
-                    position + 2,
-                    position + 4
-                ),
-                10
-            );
-
-        const value =
-            data.substring(
-                position + 4,
-                position + 4 + length
-            );
-
-        fields.push({
-            tag,
-            length,
-            value
-        });
-
-        position +=
-            4 + length;
-    }
-
-    return fields;
-}
-
-function parseEmvcoPayload(payload) {
-
-    if (
-        !payload.startsWith(
-            '000201'
-        )
-    ) {
-        return null;
-    }
-
-    const fields =
-        parseTLV(payload);
-
-    fields.forEach(field => {
-
-        if (
-            Number(field.tag) >= 26 &&
-            Number(field.tag) <= 51
-        ) {
-
-            field.children =
-                parseTLV(
-                    field.value
-                );
-
-            field.isMauCAS =
-                field.value
-                    .toLowerCase()
-                    .includes(
-                        'mu.maucas'
-                    );
+            return fields[0]?.tag === '00' && fields[0].value === '01' ? fields : null;
         }
 
-        if (
-            field.tag === '62'
-        ) {
-
-            field.children =
-                parseTLV(
-                    field.value
-                );
+        // String Sanitization Utilities
+        function escapeHtml(str) {
+            if (!str) return '';
+            return str.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;").replace(/'/g, "&#039;");
         }
-    });
-
-    return fields;
-}
-
-/* ==========================================================
-   CRC VALIDATION
-========================================================== */
-
-function calculateCRC16(payload) {
-
-    let crc = 0xFFFF;
-
-    for (
-        let i = 0;
-        i < payload.length;
-        i++
-    ) {
-
-        crc ^=
-            payload.charCodeAt(i)
-            << 8;
-
-        for (
-            let bit = 0;
-            bit < 8;
-            bit++
-        ) {
-
-            crc =
-                (crc & 0x8000)
-                ? (crc << 1) ^ 0x1021
-                : crc << 1;
-
-            crc &= 0xFFFF;
+        function escapeJs(str) {
+            if (!str) return '';
+            return str.replace(/\\/g, '\\\\').replace(/'/g, "\\'");
         }
-    }
+    </script>
+</body>
 
-    return crc
-        .toString(16)
-        .toUpperCase()
-        .padStart(4, '0');
-}
-
-/* ==========================================================
-   SECURITY ANALYSIS
-========================================================== */
-
-function runSecurityChecks(text) {
-
-    /* your security logic here */
-}
-
-/* ==========================================================
-   EXPORT
-========================================================== */
-
-function exportJSONReport() {
-
-    /* your export logic here */
-}
-
-/* ==========================================================
-   UI HELPERS
-========================================================== */
-
-async function copyToClipboard(text) {
-
-    try {
-
-        await navigator
-            .clipboard
-            .writeText(text);
-
-        showToast(
-            'Copied!',
-            'fa-check'
-        );
-
-    } catch {
-
-        showToast(
-            'Copy failed',
-            'fa-xmark'
-        );
-    }
-}
-
-function showToast(
-    message,
-    icon
-) {
-
-    /* toast code */
-}
-
-function escapeHtml(str) {
-
-    return String(str || '')
-        .replace(/&/g, '&amp;')
-        .replace(/</g, '&lt;')
-        .replace(/>/g, '&gt;')
-        .replace(/"/g, '&quot;')
-        .replace(/'/g, '&#39;');
-}
-
-function escapeJs(str) {
-
-    return String(str || '')
-        .replace(/\\/g, '\\\\')
-        .replace(/'/g, "\\'");
-}
-
-</script>
-      
+</html>
